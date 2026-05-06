@@ -24,6 +24,9 @@
 #include <unistd.h>
 
 #define PROGRAM_NAME "lateframe"
+#ifndef LATEFRAME_VERSION
+#define LATEFRAME_VERSION "0.0.0-dev"
+#endif
 #define LOG_PATH "/tmp/lateframe.log"
 #define CAPTURE_PATH "/tmp/lateframe-capture.pcap"
 
@@ -117,6 +120,7 @@ static int64_t generate_gaussian_ns(double mean_ms, double sigma_ms) {
 
 static void print_help(void) {
     printf("Usage: %s [options]\n", PROGRAM_NAME);
+    printf("Version: %s\n", LATEFRAME_VERSION);
     printf("Options:\n");
     printf("  -n, --num-packets NUM      Number of packets to send\n");
     printf("      --num_packets NUM      Backward-compatible alias\n");
@@ -134,7 +138,12 @@ static void print_help(void) {
     printf("      --sping-us USEC        Backward-compatible alias for --spin-us\n");
     printf("  -l, --log                  Log packet sends to stdout and %s\n", LOG_PATH);
     printf("  -c, --capture              Capture outgoing packets with tshark to %s\n", CAPTURE_PATH);
+    printf("  -V, --version              Display version information\n");
     printf("  -h, --help                 Display this help message\n");
+}
+
+static void print_version(void) {
+    printf("%s %s\n", PROGRAM_NAME, LATEFRAME_VERSION);
 }
 
 static int parse_positive_int(const char *text, const char *flag_name, int *out) {
@@ -635,8 +644,9 @@ int main(int argc, char *argv[]) {
     struct timespec start_time;
     struct timespec next_deadline;
     int64_t spin_duration_ns = 0;
-    const char *short_opts = "hn:i:d:p:a:S:s:lt:cf:";
+    const char *short_opts = "Vhn:i:d:p:a:S:s:lt:cf:";
     const struct option long_opts[] = {
+        {"version", no_argument, NULL, 'V'},
         {"help", no_argument, NULL, 'h'},
         {"num-packets", required_argument, NULL, 'n'},
         {"num_packets", required_argument, NULL, 'n'},
@@ -662,6 +672,10 @@ int main(int argc, char *argv[]) {
 
     while ((opt = getopt_long(argc, argv, short_opts, long_opts, NULL)) != -1) {
         switch (opt) {
+            case 'V':
+                print_version();
+                return 0;
+
             case 'h':
                 print_help();
                 return 0;

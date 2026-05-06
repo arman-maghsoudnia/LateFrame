@@ -3,9 +3,11 @@ CFLAGS = -Wall -Wextra -g
 PREFIX ?= /usr/local
 SRC = src/lateframe.c
 BIN = package/usr/bin/lateframe
+VERSION := $(shell cat VERSION)
+CPPFLAGS += -DLATEFRAME_VERSION=\"$(VERSION)\"
 
 all: directories
-	$(CC) $(CFLAGS) -o $(BIN) $(SRC) -lm -lrt -lpcap
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $(BIN) $(SRC) -lm -lrt -lpcap
 
 directories:
 	mkdir -p package/usr/bin

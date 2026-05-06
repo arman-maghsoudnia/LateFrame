@@ -1,5 +1,7 @@
 # LateFrame
 
+Current version: `0.2.0`
+
 LateFrame is a Linux UDP traffic generator for experiments where packet inter-arrival time matters.
 
 The motivation is simple: `ping` and `fping` are useful network tools, but they are not precise packet schedulers. If you need to generate traffic at a target interval with low jitter, they are the wrong baseline.
