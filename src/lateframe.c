@@ -5,9 +5,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <math.h>
-#include <net/ethernet.h>
 #include <net/if.h>
-#include <netinet/ip.h>
 #include <netinet/udp.h>
 #include <pcap.h>
 #include <sched.h>
@@ -310,95 +308,16 @@ static void free_replay_packets(replay_packet_t *packets, int num_packets) {
     free(packets);
 }
 
-static int extract_udp_payload(
-    const u_char *data,
-    uint32_t caplen,
-    int datalink,
-    const u_char **payload,
-    size_t *payload_size
-) {
-    size_t l2_len = 0;
-    uint16_t ether_type = 0;
-    const struct iphdr *ip_header = NULL;
-    const struct udphdr *udp_header = NULL;
-    size_t ip_header_len = 0;
-    size_t udp_offset = 0;
-    uint16_t udp_length = 0;
-
-    if (datalink == DLT_EN10MB) {
-        if (caplen < ETH_HLEN) {
-            return -1;
-        }
-
-        ether_type = (uint16_t)((data[12] << 8) | data[13]);
-        l2_len = ETH_HLEN;
-
-        if (ether_type == ETHERTYPE_VLAN || ether_type == 0x88A8) {
-            if (caplen < ETH_HLEN + 4) {
-                return -1;
-            }
-
-            ether_type = (uint16_t)((data[16] << 8) | data[17]);
-            l2_len += 4;
-        }
-
-        if (ether_type != ETHERTYPE_IP) {
-            return -1;
-        }
-    } else if (datalink == DLT_RAW) {
-        l2_len = 0;
-    } else {
-        return -2;
-    }
-
-    if (caplen < l2_len + sizeof(struct iphdr)) {
-        return -1;
-    }
-
-    ip_header = (const struct iphdr *)(data + l2_len);
-    if (ip_header->version != 4) {
-        return -1;
-    }
-
-    ip_header_len = (size_t)ip_header->ihl * 4U;
-    if (ip_header_len < sizeof(struct iphdr) || caplen < l2_len + ip_header_len) {
-        return -1;
-    }
-
-    if (ip_header->protocol != IPPROTO_UDP) {
-        return -1;
-    }
-
-    udp_offset = l2_len + ip_header_len;
-    if (caplen < udp_offset + sizeof(struct udphdr)) {
-        return -1;
-    }
-
-    udp_header = (const struct udphdr *)(data + udp_offset);
-    udp_length = ntohs(udp_header->len);
-    if (udp_length < sizeof(struct udphdr)) {
-        return -1;
-    }
-
-    *payload = data + udp_offset + sizeof(struct udphdr);
-    *payload_size = (size_t)udp_length - sizeof(struct udphdr);
-
-    if (caplen < udp_offset + sizeof(struct udphdr) + *payload_size) {
-        return -1;
-    }
-
-    return 0;
-}
-
 static replay_packet_t *parse_pcap(const char *pcap_file, int *num_packets) {
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t *handle = NULL;
     replay_packet_t *packets = NULL;
-    int datalink = 0;
-    int supported_link_warning_emitted = 0;
     int64_t last_ts_ns = -1;
     struct pcap_pkthdr *header = NULL;
     const u_char *data = NULL;
+    size_t short_packet_count = 0;
+    size_t truncated_packet_count = 0;
+    const size_t udp_header_size = sizeof(struct udphdr);
 
     handle = pcap_open_offline(pcap_file, errbuf);
     if (!handle) {
@@ -407,28 +326,51 @@ static replay_packet_t *parse_pcap(const char *pcap_file, int *num_packets) {
     }
 
     *num_packets = 0;
-    datalink = pcap_datalink(handle);
+
+    fprintf(
+        stderr,
+        "PCAP replay mode: each captured packet is encapsulated into UDP. "
+        "LateFrame preserves as many bytes as possible from the end of the captured packet, "
+        "so UDP header + preserved bytes matches the captured packet length whenever that length is at least %zu bytes.\n",
+        udp_header_size
+    );
 
     while (pcap_next_ex(handle, &header, &data) > 0) {
         replay_packet_t packet;
         replay_packet_t *new_packets = NULL;
-        const u_char *payload = NULL;
-        size_t payload_size = 0;
-        int extract_result = extract_udp_payload(data, header->caplen, datalink, &payload, &payload_size);
         int64_t ts_ns = 0;
+        size_t payload_size = 0;
+        const u_char *preserved_bytes = NULL;
 
-        if (extract_result == -2) {
-            if (!supported_link_warning_emitted) {
-                fprintf(stderr, "Error: unsupported PCAP link type %d. Only Ethernet and raw IPv4 captures are supported.\n", datalink);
-                supported_link_warning_emitted = 1;
-            }
-            free_replay_packets(packets, *num_packets);
-            pcap_close(handle);
-            exit(1);
+        if (header->len > header->caplen) {
+            truncated_packet_count++;
+            fprintf(
+                stderr,
+                "Warning: packet %d in %s was truncated in the capture (%u bytes captured, %u bytes on wire). "
+                "Replay will preserve timing and size based on the captured bytes only.\n",
+                *num_packets + 1,
+                pcap_file,
+                header->caplen,
+                header->len
+            );
         }
 
-        if (extract_result != 0) {
-            continue;
+        if (header->caplen >= udp_header_size) {
+            payload_size = (size_t)header->caplen - udp_header_size;
+            preserved_bytes = data + udp_header_size;
+        } else {
+            short_packet_count++;
+            payload_size = 0;
+            preserved_bytes = NULL;
+            fprintf(
+                stderr,
+                "Warning: packet %d in %s is only %u bytes long. "
+                "A UDP header alone needs %zu bytes, so the replayed UDP packet will be larger than the original capture.\n",
+                *num_packets + 1,
+                pcap_file,
+                header->caplen,
+                udp_header_size
+            );
         }
 
         ts_ns = ((int64_t)header->ts.tv_sec * 1000000000LL) + ((int64_t)header->ts.tv_usec * 1000LL);
@@ -445,7 +387,7 @@ static replay_packet_t *parse_pcap(const char *pcap_file, int *num_packets) {
         }
 
         if (payload_size > 0) {
-            memcpy(packet.packet_data, payload, payload_size);
+            memcpy(packet.packet_data, preserved_bytes, payload_size);
         }
 
         new_packets = realloc(packets, (size_t)(*num_packets + 1) * sizeof(*packets));
@@ -462,6 +404,14 @@ static replay_packet_t *parse_pcap(const char *pcap_file, int *num_packets) {
         (*num_packets)++;
         last_ts_ns = ts_ns;
     }
+
+    fprintf(
+        stderr,
+        "PCAP replay summary: %d packets loaded, %zu packets shorter than the UDP header, %zu truncated packets.\n",
+        *num_packets,
+        short_packet_count,
+        truncated_packet_count
+    );
 
     pcap_close(handle);
     return packets;
@@ -774,7 +724,7 @@ int main(int argc, char *argv[]) {
     if (traffic_mode == MODE_PCAP) {
         packets = parse_pcap(pcap_file, &num_packets);
         if (num_packets == 0) {
-            fprintf(stderr, "Error: no UDP payloads found in %s.\n", pcap_file);
+            fprintf(stderr, "Error: no packets found in %s.\n", pcap_file);
             goto cleanup;
         }
     } else {
