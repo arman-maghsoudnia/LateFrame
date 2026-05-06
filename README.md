@@ -4,7 +4,7 @@ LateFrame is a Linux UDP traffic generator for experiments where packet inter-ar
 
 The motivation is simple: `ping` and `fping` are useful network tools, but they are not precise packet schedulers. If you need to generate traffic at a target interval with low jitter, they are the wrong baseline.
 
-LateFrame uses absolute `timerfd` scheduling on `CLOCK_MONOTONIC`, CPU pinning, and a minimal send loop to keep pacing tight.
+LateFrame uses absolute deadline scheduling on `CLOCK_MONOTONIC`, CPU pinning, and a minimal send loop to keep pacing tight. By default it uses `timerfd`, and it can also use `clock_nanosleep()` with an optional busy-spin window.
 
 ## Modes
 
@@ -89,6 +89,8 @@ Main options:
 - `-S`, `--sigma`: Gaussian sigma in ms
 - `-s`, `--size`: payload size in bytes
 - `-f`, `--pcap-file`: PCAP file for replay mode
+- `--wait-mode`: `timerfd` or `nanosleep` for the packet pacing wait primitive
+- `--spin-us`: busy-spin window in microseconds for `nanosleep` wait mode
 - `-l`, `--log`: log sends to stdout and `/tmp/lateframe.log`
 - `-c`, `--capture`: capture generated packets to `/tmp/lateframe-capture.pcap`
 
@@ -96,6 +98,8 @@ Notes:
 
 - Option order does not matter.
 - Both `--num-packets` and legacy `--num_packets` are accepted.
+- `--wait-mode` defaults to `timerfd`.
+- `--wait-mode nanosleep` requires `--spin-us`.
 - Generated traffic modes require `-n`, `-s`, and `-a`.
 - Gaussian mode also requires `-S`.
 - PCAP mode ignores `-n`, `-s`, `-a`, and `-S`.
@@ -116,6 +120,10 @@ sudo lateframe -n 1000 -i eth0 -d 192.168.1.10 -p 12345 -t gaussian -a 40 -S 2 -
 
 ```bash
 sudo lateframe -i eth0 -d 192.168.1.10 -p 12345 -t pcap -f trace.pcap
+```
+
+```bash
+sudo lateframe -i eth0 -d 192.168.1.10 -p 12345 -t pcap -f trace.pcap --wait-mode nanosleep --spin-us 100
 ```
 
 ## Reproducing The Comparison

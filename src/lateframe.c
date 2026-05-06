@@ -35,6 +35,11 @@ typedef enum {
     MODE_PCAP
 } traffic_mode_t;
 
+typedef enum {
+    WAIT_MODE_TIMERFD = 0,
+    WAIT_MODE_NANOSLEEP
+} wait_mode_t;
+
 typedef struct {
     int64_t inter_arrival_ns;
     size_t packet_size;
@@ -124,6 +129,9 @@ static void print_help(void) {
     printf("  -s, --size BYTES           Payload size for generated traffic\n");
     printf("  -f, --pcap-file PATH       PCAP file to replay in pcap mode\n");
     printf("      --pcap_file PATH       Backward-compatible alias\n");
+    printf("      --wait-mode MODE       timerfd (default) or nanosleep\n");
+    printf("      --spin-us USEC         Busy-spin for the last USEC before each deadline in nanosleep mode\n");
+    printf("      --sping-us USEC        Backward-compatible alias for --spin-us\n");
     printf("  -l, --log                  Log packet sends to stdout and %s\n", LOG_PATH);
     printf("  -c, --capture              Capture outgoing packets with tshark to %s\n", CAPTURE_PATH);
     printf("  -h, --help                 Display this help message\n");
@@ -167,6 +175,25 @@ static int parse_non_negative_double(const char *text, const char *flag_name, do
     return 0;
 }
 
+static int parse_non_negative_int(const char *text, const char *flag_name, int *out) {
+    char *end = NULL;
+    long value = 0;
+
+    errno = 0;
+    value = strtol(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0') {
+        fprintf(stderr, "Error: %s expects an integer, got '%s'.\n", flag_name, text);
+        return -1;
+    }
+    if (value < 0 || value > INT32_MAX) {
+        fprintf(stderr, "Error: %s must be in the range 0..%d.\n", flag_name, INT32_MAX);
+        return -1;
+    }
+
+    *out = (int)value;
+    return 0;
+}
+
 static traffic_mode_t parse_mode(const char *value) {
     if (strcasecmp(value, "constant") == 0) {
         return MODE_CONSTANT;
@@ -182,6 +209,17 @@ static traffic_mode_t parse_mode(const char *value) {
     }
 
     return MODE_UNSET;
+}
+
+static wait_mode_t parse_wait_mode(const char *value) {
+    if (strcasecmp(value, "timerfd") == 0) {
+        return WAIT_MODE_TIMERFD;
+    }
+    if (strcasecmp(value, "nanosleep") == 0) {
+        return WAIT_MODE_NANOSLEEP;
+    }
+
+    return -1;
 }
 
 static void start_packet_capture(const char *source_interface, const char *dest_ip) {
@@ -293,6 +331,58 @@ static void add_ns(struct timespec *ts, int64_t ns) {
     while (ts->tv_nsec >= 1000000000L) {
         ts->tv_nsec -= 1000000000L;
         ts->tv_sec++;
+    }
+}
+
+static int compare_timespec(const struct timespec *a, const struct timespec *b) {
+    if (a->tv_sec != b->tv_sec) {
+        return (a->tv_sec < b->tv_sec) ? -1 : 1;
+    }
+    if (a->tv_nsec != b->tv_nsec) {
+        return (a->tv_nsec < b->tv_nsec) ? -1 : 1;
+    }
+
+    return 0;
+}
+
+static void subtract_ns(struct timespec *ts, int64_t ns) {
+    if (ns <= 0) {
+        return;
+    }
+
+    ts->tv_sec -= ns / 1000000000LL;
+    ts->tv_nsec -= ns % 1000000000LL;
+
+    while (ts->tv_nsec < 0) {
+        ts->tv_nsec += 1000000000L;
+        ts->tv_sec--;
+    }
+}
+
+static void wait_until_deadline(const struct timespec *deadline, int64_t spin_duration_ns) {
+    struct timespec sleep_deadline;
+    struct timespec now;
+
+    sleep_deadline = *deadline;
+    if (spin_duration_ns > 0) {
+        subtract_ns(&sleep_deadline, spin_duration_ns);
+    }
+
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &sleep_deadline, NULL) == EINTR) {
+    }
+
+    if (spin_duration_ns <= 0) {
+        return;
+    }
+
+    for (;;) {
+        if (clock_gettime(CLOCK_MONOTONIC, &now) == -1) {
+            perror("clock_gettime failed");
+            exit(1);
+        }
+        if (compare_timespec(&now, deadline) >= 0) {
+            break;
+        }
     }
 }
 
@@ -517,11 +607,13 @@ int main(int argc, char *argv[]) {
     int num_packets = 0;
     int packet_size = 0;
     int dest_port = 0;
+    int spin_duration_us = 0;
     int num_packets_set = 0;
     int packet_size_set = 0;
     int dest_port_set = 0;
     int parameter_set = 0;
     int sigma_set = 0;
+    int spin_duration_set = 0;
     int log_enabled = 0;
     int capture_enabled = 0;
     int absolute_timer_fd = -1;
@@ -530,6 +622,7 @@ int main(int argc, char *argv[]) {
     int i = 0;
     unsigned int seed = 0;
     traffic_mode_t traffic_mode = MODE_UNSET;
+    wait_mode_t wait_mode = WAIT_MODE_TIMERFD;
     double parameter = 0.0;
     double sigma = 0.0;
     char *source_interface = NULL;
@@ -541,6 +634,7 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in dest_addr;
     struct timespec start_time;
     struct timespec next_deadline;
+    int64_t spin_duration_ns = 0;
     const char *short_opts = "hn:i:d:p:a:S:s:lt:cf:";
     const struct option long_opts[] = {
         {"help", no_argument, NULL, 'h'},
@@ -557,6 +651,9 @@ int main(int argc, char *argv[]) {
         {"capture", no_argument, NULL, 'c'},
         {"pcap-file", required_argument, NULL, 'f'},
         {"pcap_file", required_argument, NULL, 'f'},
+        {"wait-mode", required_argument, NULL, 1000},
+        {"spin-us", required_argument, NULL, 1001},
+        {"sping-us", required_argument, NULL, 1001},
         {NULL, 0, NULL, 0}
     };
     int opt = 0;
@@ -630,6 +727,21 @@ int main(int argc, char *argv[]) {
 
             case 'f':
                 pcap_file = optarg;
+                break;
+
+            case 1000:
+                wait_mode = parse_wait_mode(optarg);
+                if (wait_mode == (wait_mode_t)-1) {
+                    fprintf(stderr, "Error: unknown wait mode '%s'. Use timerfd or nanosleep.\n", optarg);
+                    return 1;
+                }
+                break;
+
+            case 1001:
+                if (parse_non_negative_int(optarg, "--spin-us", &spin_duration_us) != 0) {
+                    return 1;
+                }
+                spin_duration_set = 1;
                 break;
 
             case '?':
@@ -731,6 +843,15 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (wait_mode == WAIT_MODE_NANOSLEEP) {
+        if (!spin_duration_set) {
+            fprintf(stderr, "Error: --wait-mode nanosleep requires --spin-us.\n");
+            return 1;
+        }
+    } else if (spin_duration_set) {
+        fprintf(stderr, "Warning: --spin-us is ignored unless --wait-mode nanosleep is selected.\n");
+    }
+
     if (log_enabled) {
         log_file = fopen(LOG_PATH, "w");
         if (!log_file) {
@@ -789,9 +910,11 @@ int main(int argc, char *argv[]) {
         goto cleanup;
     }
 
-    absolute_timer_fd = create_timerfd();
-    if (absolute_timer_fd < 0) {
-        goto cleanup;
+    if (wait_mode == WAIT_MODE_TIMERFD) {
+        absolute_timer_fd = create_timerfd();
+        if (absolute_timer_fd < 0) {
+            goto cleanup;
+        }
     }
 
     if (clock_gettime(CLOCK_MONOTONIC, &start_time) == -1) {
@@ -800,6 +923,7 @@ int main(int argc, char *argv[]) {
     }
 
     next_deadline = start_time;
+    spin_duration_ns = (int64_t)spin_duration_us * 1000LL;
 
     for (i = 0; i < num_packets; i++) {
         int64_t interval_ns = 0;
@@ -825,8 +949,12 @@ int main(int argc, char *argv[]) {
         }
 
         add_ns(&next_deadline, interval_ns);
-        set_timer_absolute(absolute_timer_fd, &next_deadline);
-        wait_for_next_tick(absolute_timer_fd);
+        if (wait_mode == WAIT_MODE_TIMERFD) {
+            set_timer_absolute(absolute_timer_fd, &next_deadline);
+            wait_for_next_tick(absolute_timer_fd);
+        } else {
+            wait_until_deadline(&next_deadline, spin_duration_ns);
+        }
 
         if (send_packet(sock, packet_data, current_packet_size, &dest_addr) != 0) {
             goto cleanup;
