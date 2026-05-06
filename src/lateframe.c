@@ -5,7 +5,9 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <math.h>
+#include <net/ethernet.h>
 #include <net/if.h>
+#include <netinet/ip.h>
 #include <netinet/udp.h>
 #include <pcap.h>
 #include <sched.h>
@@ -312,12 +314,13 @@ static replay_packet_t *parse_pcap(const char *pcap_file, int *num_packets) {
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t *handle = NULL;
     replay_packet_t *packets = NULL;
+    int datalink = 0;
     int64_t last_ts_ns = -1;
     struct pcap_pkthdr *header = NULL;
     const u_char *data = NULL;
     size_t short_packet_count = 0;
     size_t truncated_packet_count = 0;
-    const size_t udp_header_size = sizeof(struct udphdr);
+    size_t replay_overhead = 0;
 
     handle = pcap_open_offline(pcap_file, errbuf);
     if (!handle) {
@@ -326,13 +329,28 @@ static replay_packet_t *parse_pcap(const char *pcap_file, int *num_packets) {
     }
 
     *num_packets = 0;
+    datalink = pcap_datalink(handle);
+
+    if (datalink == DLT_EN10MB) {
+        replay_overhead = ETH_HLEN + sizeof(struct iphdr) + sizeof(struct udphdr);
+    } else if (datalink == DLT_RAW) {
+        replay_overhead = sizeof(struct iphdr) + sizeof(struct udphdr);
+    } else {
+        fprintf(
+            stderr,
+            "Warning: unsupported link-layer type %d for exact size matching. "
+            "LateFrame will assume IPv4 + UDP overhead only.\n",
+            datalink
+        );
+        replay_overhead = sizeof(struct iphdr) + sizeof(struct udphdr);
+    }
 
     fprintf(
         stderr,
         "PCAP replay mode: each captured packet is encapsulated into UDP. "
         "LateFrame preserves as many bytes as possible from the end of the captured packet, "
-        "so UDP header + preserved bytes matches the captured packet length whenever that length is at least %zu bytes.\n",
-        udp_header_size
+        "so the replayed packet matches the original captured packet size whenever that length is at least %zu bytes.\n",
+        replay_overhead
     );
 
     while (pcap_next_ex(handle, &header, &data) > 0) {
@@ -355,9 +373,9 @@ static replay_packet_t *parse_pcap(const char *pcap_file, int *num_packets) {
             );
         }
 
-        if (header->caplen >= udp_header_size) {
-            payload_size = (size_t)header->caplen - udp_header_size;
-            preserved_bytes = data + udp_header_size;
+        if (header->caplen >= replay_overhead) {
+            payload_size = (size_t)header->caplen - replay_overhead;
+            preserved_bytes = data + replay_overhead;
         } else {
             short_packet_count++;
             payload_size = 0;
@@ -365,11 +383,11 @@ static replay_packet_t *parse_pcap(const char *pcap_file, int *num_packets) {
             fprintf(
                 stderr,
                 "Warning: packet %d in %s is only %u bytes long. "
-                "A UDP header alone needs %zu bytes, so the replayed UDP packet will be larger than the original capture.\n",
+                "Replay encapsulation needs %zu bytes, so the replayed UDP packet will be larger than the original capture.\n",
                 *num_packets + 1,
                 pcap_file,
                 header->caplen,
-                udp_header_size
+                replay_overhead
             );
         }
 

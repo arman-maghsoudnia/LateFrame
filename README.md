@@ -15,11 +15,11 @@ LateFrame supports two main use cases:
 
 Synthetic generation is useful when you want a clean constant, Poisson, or Gaussian process.
 
-PCAP replay is useful when you need to reproduce a captured trace while preserving the original packet timing. LateFrame retains as much as possible from the end of each captured packet inside a UDP payload, so the replayed UDP packet matches the length of the original captured packet whenever possible. This matters in replay scenarios where sending packets with the same size and timing is more important than reconstructing the exact original packet contents.
+PCAP replay is useful when you need to reproduce a captured trace while preserving the original packet timing. LateFrame retains as much as possible from the end of each captured packet inside a UDP payload, so the replayed packet matches the captured packet length whenever possible after accounting for the replay encapsulation overhead. This matters in replay scenarios where sending packets with the same size and timing is more important than reconstructing the exact original packet contents.
 
 This is especially useful for experiments and research where accurate workload replay in terms of packet size and timing matters more than generating identical packets.
 
-If the original packet is smaller than the required UDP header, the replayed UDP packet cannot match the original packet size and will be larger. In this case, the user is warned.
+If the original packet is smaller than the required replay encapsulation overhead, the replayed packet cannot match the original packet size and will be larger. In this case, the user is warned.
 
 ## Result
 
@@ -210,12 +210,12 @@ PCAP replay mode does not send raw frames. It reads a PCAP, preserves the observ
 
 For a captured packet of length `X`, LateFrame preserves as many bytes as possible from the end of that packet and uses them as the UDP payload, so:
 
-- if `X >= 8`, the replayed UDP packet has length `X`
-- if `X < 8`, the replayed UDP packet must be larger than the original because a UDP header alone is 8 bytes
+- if `X` is at least as large as the replay encapsulation overhead, the replayed packet has length `X`
+- if `X` is smaller than the replay encapsulation overhead, the replayed packet must be larger than the original
 
 This is not raw frame replay. It is timing-preserving UDP encapsulation of captured packet bytes.
 
-If the original packet is smaller than the required UDP header, the replayed UDP packet cannot have the same size as the original packet and will be larger. LateFrame prints a warning in that case.
+For Ethernet captures, the replay encapsulation overhead is Ethernet + IPv4 + UDP headers. For raw IPv4 captures, it is IPv4 + UDP headers. LateFrame prints a warning when exact size matching is not possible.
 
 Any captured packet bytes can be encapsulated this way. If a packet was truncated in the PCAP, replay uses the captured length, because the missing bytes are not available.
 
