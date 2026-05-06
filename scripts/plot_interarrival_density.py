@@ -12,27 +12,33 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_INPUT_DIR = Path("comparison-data")
-DEFAULT_OUTPUT = Path("docs/interarrival-density-comparison.png")
-DEFAULT_INDIVIDUAL_OUTPUT_DIR = Path("docs/individual-density-plots")
-DEFAULT_ZOOMED_OUTPUT_DIR = Path("docs/zoomed-density-plots")
-DEFAULT_UNIFIED_OUTPUT = Path("docs/interarrival-density-results-grid.png")
-DEFAULT_PCAPS = {
-    "LateFrame": "lateframe-out.pcap",
-    "ping": "ping-test.pcap",
-    "fping": "fping-test.pcap",
-}
+DEFAULT_INPUT_DIR = Path("comparison-data/generated")
+DEFAULT_OUTPUT = Path("docs/generated/interarrival-density-comparison.png")
+DEFAULT_INDIVIDUAL_OUTPUT_DIR = Path("docs/generated/individual-density-plots")
+DEFAULT_ZOOMED_OUTPUT_DIR = Path("docs/generated/zoomed-density-plots")
+DEFAULT_UNIFIED_OUTPUT = Path("docs/generated/interarrival-density-results-grid.png")
+DEFAULT_PCAPS = [
+    ("LateFrame timerfd", "lateframe-out-timerfd.pcap"),
+    ("LateFrame spin 50us", "lateframe-out-spin50.pcap"),
+    ("LateFrame spin 100us", "lateframe-out-spin100.pcap"),
+    ("ping", "ping-test.pcap"),
+    ("fping", "fping-test.pcap"),
+]
 
 # Hardcode the histogram bin width per series for the combined comparison plot.
 COMPARISON_BIN_WIDTH_MS = {
-    "LateFrame": 0.05,
+    "LateFrame timerfd": 0.05,
+    "LateFrame spin 50us": 0.05,
+    "LateFrame spin 100us": 0.05,
     "ping": 0.05,
     "fping": 0.05,
 }
 
 # Hardcode the histogram bin width per series for the individual plots.
 INDIVIDUAL_BIN_WIDTH_MS = {
-    "LateFrame": 0.005,
+    "LateFrame timerfd": 0.005,
+    "LateFrame spin 50us": 0.005,
+    "LateFrame spin 100us": 0.005,
     "ping": 0.05,
     "fping": 0.02,
 }
@@ -43,7 +49,15 @@ ZOOMED_TRIMMED_BIN_WIDTH_MS = {
 }
 
 UNIFIED_GRID_DPI = 600
-UNIFIED_GRID_FIGSIZE = (20, 7.2)
+UNIFIED_GRID_DPI = 600
+UNIFIED_GRID_FIGSIZE = (20, 15.5)
+
+
+def slugify_series_name(name: str) -> str:
+    slug = name.lower()
+    slug = slug.replace("lateframe ", "lateframe-")
+    slug = slug.replace(" ", "-")
+    return slug
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,7 +98,7 @@ def parse_args() -> argparse.Namespace:
         "--unified-output",
         type=Path,
         default=DEFAULT_UNIFIED_OUTPUT,
-        help=f"Path to save the unified 6-panel PNG (default: {DEFAULT_UNIFIED_OUTPUT}).",
+        help=f"Path to save the unified 8-panel PNG (default: {DEFAULT_UNIFIED_OUTPUT}).",
     )
     parser.add_argument(
         "--title",
@@ -187,12 +201,16 @@ def plot_densities(series: dict[str, np.ndarray], output_path: Path, title: str)
     fig, ax = plt.subplots(figsize=(12, 4.8))
 
     colors = {
-        "LateFrame": "#12a8f0",
+        "LateFrame timerfd": "#12a8f0",
+        "LateFrame spin 50us": "#0c88c2",
+        "LateFrame spin 100us": "#7fd4ff",
         "ping": "#86bf10",
         "fping": "#ff5a1f",
     }
     fills = {
-        "LateFrame": "#7ccbf3",
+        "LateFrame timerfd": "#7ccbf3",
+        "LateFrame spin 50us": "#5eb5e0",
+        "LateFrame spin 100us": "#b6e8ff",
         "ping": "#b8dd67",
         "fping": "#f7a287",
     }
@@ -254,12 +272,16 @@ def plot_single_density(
     fig, ax = plt.subplots(figsize=(10, 4.8))
 
     colors = {
-        "LateFrame": "#12a8f0",
+        "LateFrame timerfd": "#12a8f0",
+        "LateFrame spin 50us": "#0c88c2",
+        "LateFrame spin 100us": "#7fd4ff",
         "ping": "#86bf10",
         "fping": "#ff5a1f",
     }
     fills = {
-        "LateFrame": "#7ccbf3",
+        "LateFrame timerfd": "#7ccbf3",
+        "LateFrame spin 50us": "#5eb5e0",
+        "LateFrame spin 100us": "#b6e8ff",
         "ping": "#b8dd67",
         "fping": "#f7a287",
     }
@@ -379,15 +401,34 @@ def plot_trimmed_zoom_density(
 
 
 def create_unified_grid(image_paths: list[tuple[str, Path]], output_path: Path) -> None:
-    fig, axes = plt.subplots(2, 3, figsize=UNIFIED_GRID_FIGSIZE)
+    if len(image_paths) != 8:
+        raise ValueError(f"Expected 8 images for the unified grid, got {len(image_paths)}.")
 
-    for ax, (title, image_path) in zip(axes.flat, image_paths):
+    fig = plt.figure(figsize=UNIFIED_GRID_FIGSIZE, constrained_layout=True)
+    outer = fig.add_gridspec(4, 1, height_ratios=[1.0, 1.0, 1.0, 1.0], hspace=0.08)
+
+    row1 = outer[0].subgridspec(1, 3, width_ratios=[1.0, 2.5, 1.0], wspace=0.0)
+    row2 = outer[1].subgridspec(1, 3, wspace=0.06)
+    row3 = outer[2].subgridspec(1, 2, wspace=0.06)
+    row4 = outer[3].subgridspec(1, 2, wspace=0.06)
+
+    axes = [
+        fig.add_subplot(row1[0, 1]),
+        fig.add_subplot(row2[0, 0]),
+        fig.add_subplot(row2[0, 1]),
+        fig.add_subplot(row2[0, 2]),
+        fig.add_subplot(row3[0, 0]),
+        fig.add_subplot(row3[0, 1]),
+        fig.add_subplot(row4[0, 0]),
+        fig.add_subplot(row4[0, 1]),
+    ]
+
+    for ax, (title, image_path) in zip(axes, image_paths):
         image = plt.imread(image_path)
         ax.imshow(image)
         ax.set_title(title, fontsize=12)
         ax.axis("off")
 
-    fig.tight_layout(pad=0.4, w_pad=0.4, h_pad=0.5)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=UNIFIED_GRID_DPI)
     plt.close(fig)
@@ -398,7 +439,7 @@ def main() -> int:
 
     pcap_paths = {
         name: args.input_dir / filename
-        for name, filename in DEFAULT_PCAPS.items()
+        for name, filename in DEFAULT_PCAPS
     }
 
     for path in pcap_paths.values():
@@ -426,7 +467,7 @@ def main() -> int:
     ]
 
     for name, values in series.items():
-        individual_output = args.individual_output_dir / f"{name.lower()}-interarrival-density.png"
+        individual_output = args.individual_output_dir / f"{slugify_series_name(name)}-interarrival-density.png"
         plot_single_density(
             name,
             values,

@@ -25,22 +25,23 @@ If the original packet is smaller than the required replay encapsulation overhea
 
 The current comparison uses a `100 ms` target interval and `1000` transmitted packets. The figure below includes:
 
-- the combined comparison
+- the combined comparison across the three LateFrame runs plus `ping` and `fping`
 - one standalone plot for each sender
 - trimmed zoomed plots for `ping` and `fping` with the top and bottom 1% removed
 
-LateFrame: count=999, mean=99.999980526 ms, std=0.053337378 ms  
+LateFrame timerfd: count=999, mean=100.000013938 ms, std=0.032544443 ms  
+LateFrame spin 50us: count=999, mean=100.000007255 ms, std=0.038343503 ms  
+LateFrame spin 100us: count=999, mean=99.999996038 ms, std=0.046501921 ms  
 ping: count=999, mean=104.012259731 ms, std=0.517701949 ms  
 fping: count=999, mean=100.000159280 ms, std=0.247248914 ms
 
-![Inter-arrival results grid](docs/interarrival-density-results-grid.png)
+![Inter-arrival results grid](docs/generated/interarrival-density-results-grid.png)
 
 Two things stand out in the captures:
 
-- `ping` misses the target mean by about `4 ms`.
-- `ping` and `fping` both show substantial outliers, including deviations greater than `4 ms`, while LateFrame stays much tighter.
-- LateFrame has no outlier and its distribution is narrower around the target interarrival time. 
-- LateFrame's interarrival mean is 19.47us off from the target interarrival while for fping and ping this number is 159.28us and 4.01ms respectively. 
+- all three LateFrame runs stay centered on the `100 ms` target
+- `ping` misses the target mean by about `4 ms`
+- `ping` and `fping` both show substantially wider spread than any of the LateFrame runs
 
 ## Build
 
@@ -128,7 +129,7 @@ sudo lateframe -i eth0 -d 192.168.1.10 -p 12345 -t pcap -f trace.pcap --wait-mod
 
 ## Reproducing The Comparison
 
-The PCAPs used for the current result are in `comparison-data/`. They were captured with the commands below.
+The PCAPs used for the current result are in `comparison-data/generated/`. They were captured with the commands below.
 
 ### fping
 
@@ -158,18 +159,46 @@ Capture on destination:
 sudo tshark -i eno1 -f "icmp[0] = 8 and host 128.178.122.100" -w /tmp/ping-test.pcap
 ```
 
-### LateFrame
+### LateFrame timerfd
 
 Send:
 
 ```bash
-sudo lateframe -n 1000 -i eno1 -d 128.178.122.100 -p 12345 -t constant -a 100 -s 256 -c
+sudo lateframe -n 1000 -i eno1 -d 128.178.122.100 -p 12345 -t constant -a 100 -s 256 -c --wait-mode timerfd
 ```
 
 Capture on destination:
 
 ```bash
-sudo tshark -i eno1 -f "udp and host 128.178.122.100 and port 12345" -w /tmp/lateframe-out.pcap
+sudo tshark -i eno1 -f "udp and host 128.178.122.100 and port 12345" -w /tmp/lateframe-out-timerfd.pcap
+```
+
+### LateFrame nanosleep spin 50us
+
+Send:
+
+```bash
+sudo lateframe -n 1000 -i eno1 -d 128.178.122.100 -p 12345 -t constant -a 100 -s 256 -c --wait-mode nanosleep --spin-us 50
+```
+
+Capture on destination:
+
+```bash
+sudo tshark -i eno1 -f "udp and host 128.178.122.100 and port 12345" -w /tmp/lateframe-out-spin50.pcap
+```
+
+### LateFrame nanosleep spin 100us
+
+Send:
+
+```bash
+sudo lateframe -n 1000 -i eno1 -d 128.178.122.100 -p 12345 -t constant -a 100 -s 256 -c --wait-mode nanosleep --spin-us 100
+```
+
+Capture on destination:
+
+```bash
+sudo tshark -i eno1 -f "udp and host 128.178.122.100 and port 12345" -w /tmp/lateframe-out-spin100.pcap
 ```
 
 Versions used:
@@ -180,17 +209,20 @@ Versions used:
 Host used for the run:
 
 - Architecture: `x86_64`
-- CPU: `Intel(R) Xeon(R) W-2225 CPU @ 4.10GHz`
+- CPU: `12th Gen Intel(R) Core(TM) i7-1260P`
+- Vendor: `GenuineIntel`
 - Sockets: `1`
-- Cores per socket: `4`
+- Cores per socket: `12`
 - Threads per core: `2`
-- Logical CPUs: `8`
-- CPU max frequency: `4600.0000 MHz`
-- CPU min frequency: `1200.0000 MHz`
-- L1d cache: `128 KiB (4 instances)`
-- L1i cache: `128 KiB (4 instances)`
-- L2 cache: `4 MiB (4 instances)`
-- L3 cache: `8.3 MiB (1 instance)`
+- Logical CPUs: `16`
+- CPU max frequency: `4700.0000 MHz`
+- CPU min frequency: `400.0000 MHz`
+- Kernel: `6.8.0-111-lowlatency`
+- CPU governor: `performance` on all cores
+- L1d cache: `448 KiB (12 instances)`
+- L1i cache: `640 KiB (12 instances)`
+- L2 cache: `9 MiB (6 instances)`
+- L3 cache: `18 MiB (1 instance)`
 - NUMA nodes: `1`
 - Virtualization: `VT-x`
 
@@ -204,13 +236,26 @@ python3 scripts/plot_interarrival_density.py
 
 This produces:
 
-- `docs/interarrival-density-comparison.png`
-- `docs/individual-density-plots/lateframe-interarrival-density.png`
-- `docs/individual-density-plots/ping-interarrival-density.png`
-- `docs/individual-density-plots/fping-interarrival-density.png`
-- `docs/zoomed-density-plots/ping-interarrival-density-trimmed.png`
-- `docs/zoomed-density-plots/fping-interarrival-density-trimmed.png`
-- `docs/interarrival-density-results-grid.png`
+- `docs/generated/interarrival-density-comparison.png`
+- `docs/generated/individual-density-plots/lateframe-timerfd-interarrival-density.png`
+- `docs/generated/individual-density-plots/lateframe-spin-50us-interarrival-density.png`
+- `docs/generated/individual-density-plots/lateframe-spin-100us-interarrival-density.png`
+- `docs/generated/individual-density-plots/ping-interarrival-density.png`
+- `docs/generated/individual-density-plots/fping-interarrival-density.png`
+- `docs/generated/zoomed-density-plots/ping-interarrival-density-trimmed.png`
+- `docs/generated/zoomed-density-plots/fping-interarrival-density-trimmed.png`
+- `docs/generated/interarrival-density-results-grid.png`
+
+To regenerate the replay comparison figures from all replay captures in `comparison-data/replay/`:
+
+```bash
+python3 scripts/plot_interarrival_diff.py
+```
+
+This produces one heartbeat plot and one density plot per replay PCAP, plus:
+
+- `docs/replay/ping-replay-interarrival-diff-heartbeat-aggregate.png`
+- `docs/replay/ping-replay-interarrival-diff-density-aggregate.png`
 
 ## PCAP Replay
 
@@ -227,9 +272,84 @@ For Ethernet captures, the replay encapsulation overhead is Ethernet + IPv4 + UD
 
 Any captured packet bytes can be encapsulated this way. If a packet was truncated in the PCAP, replay uses the captured length, because the missing bytes are not available.
 
+LateFrame supports two pacing backends for replay and generated traffic:
+
+- `timerfd`: the default backend, using absolute deadline scheduling through `timerfd`
+- `nanosleep`: absolute `clock_nanosleep()` plus a configurable busy-spin window through `--spin-us`
+
+Both are supported because the better choice depends on the host. In the replay measurements below, busy waiting slightly improved the replay error compared with `timerfd`, while `timerfd` remains the default because it is the more conservative baseline.
+
+## Replay Results
+
+For replay evaluation, we replay the existing `comparison-data/generated/ping-test.pcap` trace and compare the inter-arrival difference between the original capture and the replayed output.
+
+Measured replay error against `comparison-data/generated/ping-test.pcap`:
+
+- `timerfd`: abs mean `0.012260538 ms`, std `0.025607717 ms`, min `-0.179767609 ms`, max `0.172853470 ms`
+- `nanosleep --spin-us 50`: abs mean `0.012215671 ms`, std `0.023457672 ms`, min `-0.134944916 ms`, max `0.136375427 ms`
+- `nanosleep --spin-us 100`: abs mean `0.013313733 ms`, std `0.023949685 ms`, min `-0.119447708 ms`, max `0.086784363 ms`
+
+The aggregate heartbeat plot is shown first because it makes packet-by-packet outliers easier to compare across the three pacing modes, followed by the aggregate density view.
+
+![Replay inter-arrival heartbeat aggregate](docs/replay/ping-replay-interarrival-diff-heartbeat-aggregate.png)
+
+![Replay inter-arrival density aggregate](docs/replay/ping-replay-interarrival-diff-density-aggregate.png)
+
+## Reproducing Replay Results
+
+For the replay comparison, we use the already captured `comparison-data/generated/ping-test.pcap` file as the source trace.
+
+### timerfd
+
+Capture on the same machine:
+
+```bash
+sudo tshark -i eno1 -f "udp port 12345" -w /tmp/ping-test-replayed-result-timerfd.pcap
+```
+
+Send:
+
+```bash
+sudo lateframe -i enp113s0 -d 128.178.122.100 -p 12345 -t pcap -f comparison-data/generated/ping-test.pcap --wait-mode timerfd
+```
+
+### nanosleep spin 50us
+
+Capture on the same machine:
+
+```bash
+sudo tshark -i eno1 -f "udp port 12345" -w /tmp/ping-test-replayed-result-spin50.pcap
+```
+
+Send:
+
+```bash
+sudo lateframe -i enp113s0 -d 128.178.122.100 -p 12345 -t pcap -f comparison-data/generated/ping-test.pcap --wait-mode nanosleep --spin-us 50
+```
+
+### nanosleep spin 100us
+
+Capture on the same machine:
+
+```bash
+sudo tshark -i eno1 -f "udp port 12345" -w /tmp/ping-test-replayed-result-spin100.pcap
+```
+
+Send:
+
+```bash
+sudo lateframe -i enp113s0 -d 128.178.122.100 -p 12345 -t pcap -f comparison-data/generated/ping-test.pcap --wait-mode nanosleep --spin-us 100
+```
+
+Then copy the replay PCAPs into `comparison-data/replay/` and run:
+
+```bash
+python3 scripts/plot_interarrival_diff.py
+```
+
 ## How It Works
 
-- Absolute `timerfd` scheduling on `CLOCK_MONOTONIC`
+- Absolute deadline scheduling on `CLOCK_MONOTONIC` using either `timerfd` or `clock_nanosleep()`
 - CPU pinning
 - Best-effort `SCHED_FIFO`
 - Pre-built payloads for generated traffic

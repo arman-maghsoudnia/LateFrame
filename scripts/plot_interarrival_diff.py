@@ -6,23 +6,38 @@ import argparse
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_ORIGINAL_PCAP = Path("comparison-data/ping-test.pcap")
-DEFAULT_REPLAYED_PCAP = Path("comparison-data/replayed/ping-test-replayed-result.pcap")
-DEFAULT_OUTPUT_DIR = Path("docs/interarrival-diff")
-DENSITY_BIN_WIDTH_MS = 0.01
+DEFAULT_ORIGINAL_PCAP = Path("comparison-data/generated/ping-test.pcap")
+DEFAULT_REPLAY_DIR = Path("comparison-data/replay")
+DEFAULT_OUTPUT_DIR = Path("docs/replay")
+DENSITY_BIN_WIDTH_MS = 0.005
+OUTPUT_DPI = 600
+AGGREGATE_FIGSIZE = (12, 13.5)
+INDIVIDUAL_FIGSIZE = (10, 4.8)
+HEARTBEAT_FIGSIZE = (12, 4.8)
+
+
+@dataclass
+class ReplaySeries:
+    key: str
+    label: str
+    replayed_path: Path
+    replayed_interarrivals_ms: np.ndarray
+    diff_ms: np.ndarray
+    original_aligned_ms: np.ndarray
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare original and replayed PCAP inter-arrival times by plotting "
-            "their packet-by-packet difference."
+            "Compare one original PCAP against every replay PCAP in a directory by "
+            "plotting packet-by-packet inter-arrival differences."
         )
     )
     parser.add_argument(
@@ -32,10 +47,16 @@ def parse_args() -> argparse.Namespace:
         help=f"Original PCAP path (default: {DEFAULT_ORIGINAL_PCAP}).",
     )
     parser.add_argument(
-        "--replayed",
+        "--replay-dir",
         type=Path,
-        default=DEFAULT_REPLAYED_PCAP,
-        help=f"Replayed PCAP path (default: {DEFAULT_REPLAYED_PCAP}).",
+        default=DEFAULT_REPLAY_DIR,
+        help=f"Directory containing replay PCAPs (default: {DEFAULT_REPLAY_DIR}).",
+    )
+    parser.add_argument(
+        "--replayed-dir",
+        dest="replay_dir",
+        type=Path,
+        help="Backward-compatible alias for --replay-dir.",
     )
     parser.add_argument(
         "--output-dir",
@@ -119,22 +140,89 @@ def gaussian_kde(values: np.ndarray, grid: np.ndarray) -> np.ndarray:
     return density
 
 
-def print_stats(original: np.ndarray, replayed: np.ndarray, diff: np.ndarray) -> None:
-    print(f"original_count={len(original)}")
-    print(f"replayed_count={len(replayed)}")
-    print(f"compared_count={len(diff)}")
-    print(f"original_mean_ms={np.mean(original):.9f}")
-    print(f"replayed_mean_ms={np.mean(replayed):.9f}")
-    print(f"diff_mean_ms={np.mean(diff):.9f}")
-    print(f"diff_std_ms={np.std(diff, ddof=1):.9f}")
-    print(f"diff_min_ms={np.min(diff):.9f}")
-    print(f"diff_max_ms={np.max(diff):.9f}")
-    print(f"diff_abs_mean_ms={np.mean(np.abs(diff)):.9f}")
+def replay_key_from_path(path: Path) -> str:
+    name = path.stem
+    prefix = "ping-test-replayed-result-"
+    if name.startswith(prefix):
+        return name[len(prefix):]
+    if name == "ping-test-replayed-result":
+        return "replayed"
+    return name
 
 
-def plot_diff_density(diff_ms: np.ndarray, output_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 4.8))
+def replay_label_from_key(key: str) -> str:
+    label_map = {
+        "timerfd": "timerfd",
+        "spin50": "nanosleep spin 50us",
+        "spin100": "nanosleep spin 100us",
+        "replayed": "replayed",
+    }
+    return label_map.get(key, key.replace("-", " "))
 
+
+def stats_dict(original: np.ndarray, replayed: np.ndarray, diff: np.ndarray) -> dict[str, float]:
+    return {
+        "original_count": len(original),
+        "replayed_count": len(replayed),
+        "compared_count": len(diff),
+        "original_mean_ms": float(np.mean(original)),
+        "replayed_mean_ms": float(np.mean(replayed)),
+        "diff_mean_ms": float(np.mean(diff)),
+        "diff_std_ms": float(np.std(diff, ddof=1)),
+        "diff_min_ms": float(np.min(diff)),
+        "diff_max_ms": float(np.max(diff)),
+        "diff_abs_mean_ms": float(np.mean(np.abs(diff))),
+    }
+
+
+def print_stats(series: ReplaySeries) -> None:
+    stats = stats_dict(
+        series.original_aligned_ms,
+        series.replayed_interarrivals_ms,
+        series.diff_ms,
+    )
+    print(f"[{series.key}] replayed={series.replayed_path}")
+    for key, value in stats.items():
+        if key.endswith("_count"):
+            print(f"{key}={int(value)}")
+        else:
+            print(f"{key}={value:.9f}")
+
+
+def load_series(original_pcap: Path, replay_dir: Path) -> list[ReplaySeries]:
+    replayed_paths = sorted(replay_dir.glob("*.pcap"))
+    if not replayed_paths:
+        raise RuntimeError(f"no replay PCAP files found in {replay_dir}")
+
+    original_interarrivals = compute_interarrivals_ms(load_timestamps_from_pcap(original_pcap))
+    series_list: list[ReplaySeries] = []
+
+    for replayed_path in replayed_paths:
+        replayed_interarrivals = compute_interarrivals_ms(load_timestamps_from_pcap(replayed_path))
+        compared_count = min(len(original_interarrivals), len(replayed_interarrivals))
+        if compared_count == 0:
+            raise RuntimeError(f"no inter-arrival samples to compare for {replayed_path}")
+
+        original_aligned = original_interarrivals[:compared_count]
+        replayed_aligned = replayed_interarrivals[:compared_count]
+        diff_ms = original_aligned - replayed_aligned
+        key = replay_key_from_path(replayed_path)
+
+        series_list.append(
+            ReplaySeries(
+                key=key,
+                label=replay_label_from_key(key),
+                replayed_path=replayed_path,
+                replayed_interarrivals_ms=replayed_aligned,
+                diff_ms=diff_ms,
+                original_aligned_ms=original_aligned,
+            )
+        )
+
+    return series_list
+
+
+def plot_density_axis(ax: plt.Axes, diff_ms: np.ndarray, title: str) -> None:
     edges = build_bin_edges(diff_ms, DENSITY_BIN_WIDTH_MS)
     x_min = float(np.min(diff_ms))
     x_max = float(np.max(diff_ms))
@@ -163,22 +251,15 @@ def plot_diff_density(diff_ms: np.ndarray, output_path: Path) -> None:
     )
     ax.axvline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.8)
 
-    ax.set_title("Inter-arrival Difference Density")
+    ax.set_title(title)
     ax.set_xlabel("original - replayed inter-arrival [ms]")
     ax.set_ylabel("Density Function")
     ax.grid(True, alpha=0.45, linewidth=0.8)
     ax.set_axisbelow(True)
     ax.legend(loc="upper right", frameon=True)
-    fig.tight_layout()
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
 
 
-def plot_diff_heartbeat(diff_ms: np.ndarray, output_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(12, 4.8))
-
+def plot_heartbeat_axis(ax: plt.Axes, diff_ms: np.ndarray, title: str) -> None:
     packet_index = np.arange(1, len(diff_ms) + 1)
 
     ax.plot(
@@ -198,15 +279,54 @@ def plot_diff_heartbeat(diff_ms: np.ndarray, output_path: Path) -> None:
     )
     ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.8)
 
-    ax.set_title("Inter-arrival Difference Per Packet")
+    ax.set_title(title)
     ax.set_xlabel("Packet index")
     ax.set_ylabel("original - replayed inter-arrival [ms]")
     ax.grid(True, alpha=0.35, linewidth=0.8)
     ax.set_axisbelow(True)
-    fig.tight_layout()
 
+
+def plot_individual_density(series: ReplaySeries, output_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=INDIVIDUAL_FIGSIZE)
+    plot_density_axis(ax, series.diff_ms, f"Inter-arrival Difference Density ({series.label})")
+    fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=OUTPUT_DPI)
+    plt.close(fig)
+
+
+def plot_individual_heartbeat(series: ReplaySeries, output_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=HEARTBEAT_FIGSIZE)
+    plot_heartbeat_axis(ax, series.diff_ms, f"Inter-arrival Difference Per Packet ({series.label})")
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=OUTPUT_DPI)
+    plt.close(fig)
+
+
+def plot_aggregate_density(series_list: list[ReplaySeries], output_path: Path) -> None:
+    fig, axes = plt.subplots(len(series_list), 1, figsize=AGGREGATE_FIGSIZE)
+    axes_array = np.atleast_1d(axes)
+
+    for ax, series in zip(axes_array, series_list):
+        plot_density_axis(ax, series.diff_ms, f"Inter-arrival Difference Density ({series.label})")
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=OUTPUT_DPI)
+    plt.close(fig)
+
+
+def plot_aggregate_heartbeat(series_list: list[ReplaySeries], output_path: Path) -> None:
+    fig, axes = plt.subplots(len(series_list), 1, figsize=AGGREGATE_FIGSIZE)
+    axes_array = np.atleast_1d(axes)
+
+    for ax, series in zip(axes_array, series_list):
+        plot_heartbeat_axis(ax, series.diff_ms, f"Inter-arrival Difference Per Packet ({series.label})")
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=OUTPUT_DPI)
     plt.close(fig)
 
 
@@ -214,31 +334,26 @@ def main() -> int:
     args = parse_args()
 
     try:
-        original_interarrivals = compute_interarrivals_ms(load_timestamps_from_pcap(args.original))
-        replayed_interarrivals = compute_interarrivals_ms(load_timestamps_from_pcap(args.replayed))
+        series_list = load_series(args.original, args.replay_dir)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    compared_count = min(len(original_interarrivals), len(replayed_interarrivals))
-    if compared_count == 0:
-        print("Error: no inter-arrival samples to compare.", file=sys.stderr)
-        return 1
+    for series in series_list:
+        print_stats(series)
+        density_output = args.output_dir / "density" / f"ping-replay-interarrival-diff-density-{series.key}.png"
+        heartbeat_output = args.output_dir / "heartbeat" / f"ping-replay-interarrival-diff-heartbeat-{series.key}.png"
+        plot_individual_density(series, density_output)
+        plot_individual_heartbeat(series, heartbeat_output)
+        print(f"Saved plot to {density_output}")
+        print(f"Saved plot to {heartbeat_output}")
 
-    original_aligned = original_interarrivals[:compared_count]
-    replayed_aligned = replayed_interarrivals[:compared_count]
-    diff_ms = original_aligned - replayed_aligned
-
-    print_stats(original_aligned, replayed_aligned, diff_ms)
-
-    density_output = args.output_dir / "ping-replay-interarrival-diff-density.png"
-    heartbeat_output = args.output_dir / "ping-replay-interarrival-diff-heartbeat.png"
-
-    plot_diff_density(diff_ms, density_output)
-    plot_diff_heartbeat(diff_ms, heartbeat_output)
-
-    print(f"Saved plot to {density_output}")
-    print(f"Saved plot to {heartbeat_output}")
+    aggregate_heartbeat_output = args.output_dir / "ping-replay-interarrival-diff-heartbeat-aggregate.png"
+    aggregate_density_output = args.output_dir / "ping-replay-interarrival-diff-density-aggregate.png"
+    plot_aggregate_heartbeat(series_list, aggregate_heartbeat_output)
+    plot_aggregate_density(series_list, aggregate_density_output)
+    print(f"Saved plot to {aggregate_heartbeat_output}")
+    print(f"Saved plot to {aggregate_density_output}")
     return 0
 
 
