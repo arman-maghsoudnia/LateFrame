@@ -94,6 +94,7 @@ Main options:
 - `-f`, `--pcap-file`: PCAP file for replay mode
 - `--wait-mode`: `timerfd` or `nanosleep` for the packet pacing wait primitive
 - `--spin-us`: busy-spin window in microseconds for `nanosleep` wait mode
+- `--no-cpu-pin`: Disable CPU pinning (default: enabled)
 - `-l`, `--log`: log sends to stdout and `/tmp/lateframe.log`
 - `-c`, `--capture`: capture generated packets to `/tmp/lateframe-capture.pcap`
 

@@ -138,7 +138,7 @@ static void print_help(void) {
     printf("      --wait-mode MODE       timerfd (default) or nanosleep\n");
     printf("      --spin-us USEC         Busy-spin for the last USEC before each deadline in nanosleep mode\n");
     printf("      --sping-us USEC        Backward-compatible alias for --spin-us\n");
-    printf("      --no-cpu-pin            Disable CPU pinning (default: enabled)\n");
+    printf("      --no-cpu-pin           Disable CPU pinning (default: enabled)\n");
     printf("  -l, --log                  Log packet sends to stdout and %s\n", LOG_PATH);
     printf("  -c, --capture              Capture outgoing packets with tshark to %s\n", CAPTURE_PATH);
     printf("  -V, --version              Display version information\n");
