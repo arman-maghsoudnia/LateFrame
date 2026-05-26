@@ -1,3 +1,4 @@
 /__pycache__
 *.pyc
-/package/usr/bin/lateframe
+package/usr/bin/lateframe
+.venv/

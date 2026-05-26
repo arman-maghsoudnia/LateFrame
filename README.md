@@ -259,6 +259,14 @@ This produces one heartbeat plot and one density plot per replay PCAP, plus:
 - `docs/replay/ping-replay-interarrival-diff-heartbeat-aggregate.png`
 - `docs/replay/ping-replay-interarrival-diff-density-aggregate.png`
 
+To compare the baseline capture against the CPU-pinned and non-pinned replay runs in `comparison-data/CPU_pinning/`:
+
+```bash
+python3 scripts/compare_CPU_pinning.py
+```
+
+This produces a combined density figure, per-series density figures, and replay-difference plots under `docs/generated/cpu-pinning/`.
+
 ## PCAP Replay
 
 PCAP replay mode does not send raw frames. It reads a PCAP, preserves the observed inter-arrival timing, and encapsulates the captured bytes into UDP packets.

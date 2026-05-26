@@ -906,7 +906,9 @@ int main(int argc, char *argv[]) {
 
     set_realtime_priority(99);
     if (cpu_pinning_enabled) {
-        set_cpu_affinity(0);
+        uint8_t cpu_id = 0;
+        set_cpu_affinity(cpu_id);
+        printf("CPU pinning enabled: process is pinned to CPU %d\n", cpu_id);
     }
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
