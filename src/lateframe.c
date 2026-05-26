@@ -50,6 +50,8 @@ typedef struct {
 } replay_packet_t;
 
 static pid_t tshark_pid = -1;
+/* Global flag: CPU pinning enabled by default. Set to 0 to disable. */
+static int cpu_pinning_enabled = 1;
 
 static void warn_errno(const char *message) {
     fprintf(stderr, "Warning: %s: %s\n", message, strerror(errno));
@@ -136,6 +138,7 @@ static void print_help(void) {
     printf("      --wait-mode MODE       timerfd (default) or nanosleep\n");
     printf("      --spin-us USEC         Busy-spin for the last USEC before each deadline in nanosleep mode\n");
     printf("      --sping-us USEC        Backward-compatible alias for --spin-us\n");
+    printf("      --no-cpu-pin            Disable CPU pinning (default: enabled)\n");
     printf("  -l, --log                  Log packet sends to stdout and %s\n", LOG_PATH);
     printf("  -c, --capture              Capture outgoing packets with tshark to %s\n", CAPTURE_PATH);
     printf("  -V, --version              Display version information\n");
@@ -248,7 +251,7 @@ static void start_packet_capture(const char *source_interface, const char *dest_
         int devnull = -1;
         int ret = 0;
 
-        set_cpu_affinity(1);
+        // set_cpu_affinity(1);
         set_realtime_priority(99);
 
         ret = snprintf(filter, sizeof(filter), "udp and ip dst %s", dest_ip);
@@ -664,6 +667,7 @@ int main(int argc, char *argv[]) {
         {"wait-mode", required_argument, NULL, 1000},
         {"spin-us", required_argument, NULL, 1001},
         {"sping-us", required_argument, NULL, 1001},
+        {"no-cpu-pin", no_argument, NULL, 1002},
         {NULL, 0, NULL, 0}
     };
     int opt = 0;
@@ -756,6 +760,10 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
                 spin_duration_set = 1;
+                break;
+
+            case 1002:
+                cpu_pinning_enabled = 0;
                 break;
 
             case '?':
@@ -897,7 +905,9 @@ int main(int argc, char *argv[]) {
     srand(seed);
 
     set_realtime_priority(99);
-    set_cpu_affinity(0);
+    if (cpu_pinning_enabled) {
+        set_cpu_affinity(0);
+    }
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
