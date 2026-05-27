@@ -1,6 +1,6 @@
 # LateFrame
 
-Current version: `0.3.1`
+Current version: `0.4.0`
 
 LateFrame is a Linux UDP traffic generator for experiments where packet inter-arrival time matters.
 
@@ -96,6 +96,7 @@ Main options:
 - `--spin-us`: busy-spin window in microseconds for `nanosleep` wait mode
 - `--no-cpu-pin`: Disable CPU pinning (default: enabled)
 - `-l`, `--log`: log sends to stdout and `/tmp/lateframe.log`
+- `-D`, `--dscp`: Assign same DSCP value to all generated or replayed packets (0 to 63)
 - `-c`, `--capture`: capture generated packets to `/tmp/lateframe-capture.pcap`
 
 Notes:

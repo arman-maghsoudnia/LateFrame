@@ -140,6 +140,7 @@ static void print_help(void) {
     printf("      --sping-us USEC        Backward-compatible alias for --spin-us\n");
     printf("      --no-cpu-pin           Disable CPU pinning (default: enabled)\n");
     printf("  -l, --log                  Log packet sends to stdout and %s\n", LOG_PATH);
+    printf("  -D, --dscp VALUE           Assign same DSCP value to all generated or replayed packets (0 to 63)\n");
     printf("  -c, --capture              Capture outgoing packets with tshark to %s\n", CAPTURE_PATH);
     printf("  -V, --version              Display version information\n");
     printf("  -h, --help                 Display this help message\n");
@@ -627,6 +628,7 @@ int main(int argc, char *argv[]) {
     int sigma_set = 0;
     int spin_duration_set = 0;
     int log_enabled = 0;
+    int dscp_value = -1;
     int capture_enabled = 0;
     int absolute_timer_fd = -1;
     int sock = -1;
@@ -647,7 +649,7 @@ int main(int argc, char *argv[]) {
     struct timespec start_time;
     struct timespec next_deadline;
     int64_t spin_duration_ns = 0;
-    const char *short_opts = "Vhn:i:d:p:a:S:s:lt:cf:";
+    const char *short_opts = "VhD:n:i:d:p:a:S:s:lt:cf:";
     const struct option long_opts[] = {
         {"version", no_argument, NULL, 'V'},
         {"help", no_argument, NULL, 'h'},
@@ -663,6 +665,7 @@ int main(int argc, char *argv[]) {
         {"distribution", required_argument, NULL, 't'},
         {"capture", no_argument, NULL, 'c'},
         {"pcap-file", required_argument, NULL, 'f'},
+        {"dscp", required_argument, NULL, 'D'},
         {"pcap_file", required_argument, NULL, 'f'},
         {"wait-mode", required_argument, NULL, 1000},
         {"spin-us", required_argument, NULL, 1001},
@@ -735,6 +738,16 @@ int main(int argc, char *argv[]) {
                 traffic_mode = parse_mode(optarg);
                 if (traffic_mode == MODE_UNSET) {
                     fprintf(stderr, "Error: unknown distribution '%s'. Use constant, poisson, gaussian, or pcap.\n", optarg);
+                    return 1;
+                }
+                break;
+
+            case 'D':
+                if (parse_non_negative_int(optarg, "-D/--dscp", &dscp_value) != 0) {
+                    return 1;
+                }
+                if (dscp_value > 63) {
+                    fprintf(stderr, "Error: DSCP value must be 0..63.\n");
                     return 1;
                 }
                 break;
@@ -918,6 +931,14 @@ int main(int argc, char *argv[]) {
     }
 
     set_non_blocking(sock);
+
+    if (dscp_value >= 0) {
+        int tos = dscp_value << 2;
+        if (setsockopt(sock, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) < 0) {
+            perror("setsockopt IP_TOS failed");
+            goto cleanup;
+        }
+    }
 
     if (setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, source_interface, strlen(source_interface) + 1) < 0) {
         perror("Bind to device failed");
