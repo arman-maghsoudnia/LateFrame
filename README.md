@@ -1,6 +1,6 @@
 # LateFrame
 
-Current version: `0.3.0`
+Current version: `0.3.1`
 
 LateFrame is a Linux UDP traffic generator for experiments where packet inter-arrival time matters.
 
