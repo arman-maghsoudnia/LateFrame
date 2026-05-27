@@ -94,6 +94,7 @@ Main options:
 - `-f`, `--pcap-file`: PCAP file for replay mode
 - `--wait-mode`: `timerfd` or `nanosleep` for the packet pacing wait primitive
 - `--spin-us`: busy-spin window in microseconds for `nanosleep` wait mode
+- `--no-cpu-pin`: Disable CPU pinning (default: enabled)
 - `-l`, `--log`: log sends to stdout and `/tmp/lateframe.log`
 - `-c`, `--capture`: capture generated packets to `/tmp/lateframe-capture.pcap`
 
@@ -258,6 +259,14 @@ This produces one heartbeat plot and one density plot per replay PCAP, plus:
 
 - `docs/replay/ping-replay-interarrival-diff-heartbeat-aggregate.png`
 - `docs/replay/ping-replay-interarrival-diff-density-aggregate.png`
+
+To compare the baseline capture against the CPU-pinned and non-pinned replay runs in `comparison-data/CPU_pinning/`:
+
+```bash
+python3 scripts/compare_CPU_pinning.py
+```
+
+This produces a combined density figure, per-series density figures, and replay-difference plots under `docs/generated/cpu-pinning/`.
 
 ## PCAP Replay
 
