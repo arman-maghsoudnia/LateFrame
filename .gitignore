@@ -1,3 +1,12 @@
 /__pycache__
 *.pyc
-/package/usr/bin/lateframe
+package/usr/bin/lateframe
+.venv/
+
+# Large files
+comparison-data/Multiple_streams/ego4d/
+comparison-data/Multiple_streams/google_meet/
+comparison-data/Multiple_streams/results.pcap
+comparison-data/Multiple_streams/swisscat/
+comparison-data/Multiple_streams/viratdata/
+comparison-data/Multiple_streams/whatsapp/

@@ -6,39 +6,27 @@ import argparse
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_INPUT_DIR = Path("comparison-data/generated")
-DEFAULT_OUTPUT = Path("docs/generated/interarrival-density-comparison.png")
-DEFAULT_INDIVIDUAL_OUTPUT_DIR = Path("docs/generated/individual-density-plots")
-DEFAULT_ZOOMED_OUTPUT_DIR = Path("docs/generated/zoomed-density-plots")
-DEFAULT_UNIFIED_OUTPUT = Path("docs/generated/interarrival-density-results-grid.png")
-DEFAULT_PCAPS = [
-    ("LateFrame timerfd", "lateframe-out-timerfd.pcap"),
-    ("LateFrame spin 50us", "lateframe-out-spin50.pcap"),
-    ("LateFrame spin 100us", "lateframe-out-spin100.pcap"),
-    ("ping", "ping-test.pcap"),
-    ("fping", "fping-test.pcap"),
-]
-
 # Hardcode the histogram bin width per series for the combined comparison plot.
 COMPARISON_BIN_WIDTH_MS = {
-    "LateFrame timerfd": 0.05,
-    "LateFrame spin 50us": 0.05,
-    "LateFrame spin 100us": 0.05,
+    "lateframe-timerfd": 0.05,
+    "lateframe-spin-50us": 0.05,
+    "lateframe-spin-100us": 0.05,
     "ping": 0.05,
     "fping": 0.05,
 }
 
 # Hardcode the histogram bin width per series for the individual plots.
 INDIVIDUAL_BIN_WIDTH_MS = {
-    "LateFrame timerfd": 0.005,
-    "LateFrame spin 50us": 0.005,
-    "LateFrame spin 100us": 0.005,
+    "lateframe-timerfd": 0.005,
+    "lateframe-spin-50us": 0.005,
+    "lateframe-spin-100us": 0.005,
     "ping": 0.05,
     "fping": 0.02,
 }
@@ -48,16 +36,32 @@ ZOOMED_TRIMMED_BIN_WIDTH_MS = {
     "fping": 0.01,
 }
 
-UNIFIED_GRID_DPI = 600
+COLORS = {
+    "lateframe-timerfd": "#12a8f0",
+    "lateframe-spin-50us": "#0c88c2",
+    "lateframe-spin-100us": "#7fd4ff",
+    "ping": "#86bf10",
+    "fping": "#ff5a1f",
+}
+
+FILLS = {
+    "lateframe-timerfd": "#7ccbf3",
+    "lateframe-spin-50us": "#5eb5e0",
+    "lateframe-spin-100us": "#b6e8ff",
+    "ping": "#b8dd67",
+    "fping": "#f7a287",
+}
+
 UNIFIED_GRID_DPI = 600
 UNIFIED_GRID_FIGSIZE = (20, 15.5)
 
 
-def slugify_series_name(name: str) -> str:
-    slug = name.lower()
-    slug = slug.replace("lateframe ", "lateframe-")
-    slug = slug.replace(" ", "-")
-    return slug
+@dataclass
+class DensitySeries:
+    key: str
+    label: str
+    pcap_path: Path
+    interarrivals_ms: np.ndarray
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,40 +69,42 @@ def parse_args() -> argparse.Namespace:
         description="Plot density histograms of packet inter-arrival times from comparison PCAP files."
     )
     parser.add_argument(
-        "--input-dir",
-        type=Path,
-        default=DEFAULT_INPUT_DIR,
-        help=f"Directory containing the comparison PCAP files (default: {DEFAULT_INPUT_DIR}).",
+        "--series",
+        action="append",
+        required=True,
+        metavar="KEY=LABEL=PCAP",
+        help="PCAP series to plot. May be repeated.",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_OUTPUT,
-        help=f"Path to save the output figure (default: {DEFAULT_OUTPUT}).",
+        required=True,
+        help="Path to save the combined density figure.",
     )
     parser.add_argument(
         "--individual-output-dir",
         type=Path,
-        default=DEFAULT_INDIVIDUAL_OUTPUT_DIR,
-        help=(
-            "Directory to save one figure per series "
-            f"(default: {DEFAULT_INDIVIDUAL_OUTPUT_DIR})."
-        ),
+        required=True,
+        help="Directory to save one density figure per series.",
     )
     parser.add_argument(
         "--zoomed-output-dir",
         type=Path,
-        default=DEFAULT_ZOOMED_OUTPUT_DIR,
-        help=(
-            "Directory to save zoomed ping/fping plots with the top and bottom "
-            f"1 percent removed (default: {DEFAULT_ZOOMED_OUTPUT_DIR})."
-        ),
+        required=True,
+        help="Directory to save trimmed zoom density figures.",
+    )
+    parser.add_argument(
+        "--zoomed",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="Series key to also plot with the top and bottom 1 percent removed. May be repeated.",
     )
     parser.add_argument(
         "--unified-output",
         type=Path,
-        default=DEFAULT_UNIFIED_OUTPUT,
-        help=f"Path to save the unified 8-panel PNG (default: {DEFAULT_UNIFIED_OUTPUT}).",
+        required=True,
+        help="Path to save the unified grid image.",
     )
     parser.add_argument(
         "--title",
@@ -106,6 +112,18 @@ def parse_args() -> argparse.Namespace:
         help="Plot title.",
     )
     return parser.parse_args()
+
+
+def parse_series_spec(spec: str) -> tuple[str, str, Path]:
+    parts = spec.split("=", 2)
+    if len(parts) != 3:
+        raise ValueError(f"invalid --series value '{spec}', expected KEY=LABEL=PCAP")
+
+    key, label, pcap = (part.strip() for part in parts)
+    if not key or not label or not pcap:
+        raise ValueError(f"invalid --series value '{spec}', expected KEY=LABEL=PCAP")
+
+    return key, label, Path(pcap)
 
 
 def load_timestamps_from_pcap(pcap_path: Path) -> list[float]:
@@ -158,11 +176,11 @@ def compute_interarrivals_ms(timestamps_s: list[float]) -> np.ndarray:
     return np.diff(timestamps) * 1000.0
 
 
-def format_stats(name: str, interarrivals_ms: np.ndarray) -> str:
-    mean_ms = float(np.mean(interarrivals_ms))
-    std_ms = float(np.std(interarrivals_ms, ddof=1))
+def format_stats(series: DensitySeries) -> str:
+    mean_ms = float(np.mean(series.interarrivals_ms))
+    std_ms = float(np.std(series.interarrivals_ms, ddof=1))
     return (
-        f"{name}: count={len(interarrivals_ms)}, "
+        f"{series.label}: count={len(series.interarrivals_ms)}, "
         f"mean={mean_ms:.9f} ms, std={std_ms:.9f} ms"
     )
 
@@ -196,39 +214,25 @@ def build_bin_edges(x_min: float, x_max: float, bin_width_ms: float) -> np.ndarr
     return np.linspace(start, start + num_bins * bin_width_ms, num_bins + 1)
 
 
-def plot_densities(series: dict[str, np.ndarray], output_path: Path, title: str) -> None:
+def plot_densities(series_list: list[DensitySeries], output_path: Path, title: str) -> None:
     plt.style.use("default")
     fig, ax = plt.subplots(figsize=(12, 4.8))
 
-    colors = {
-        "LateFrame timerfd": "#12a8f0",
-        "LateFrame spin 50us": "#0c88c2",
-        "LateFrame spin 100us": "#7fd4ff",
-        "ping": "#86bf10",
-        "fping": "#ff5a1f",
-    }
-    fills = {
-        "LateFrame timerfd": "#7ccbf3",
-        "LateFrame spin 50us": "#5eb5e0",
-        "LateFrame spin 100us": "#b6e8ff",
-        "ping": "#b8dd67",
-        "fping": "#f7a287",
-    }
-
-    stacked = np.concatenate(list(series.values()))
+    stacked = np.concatenate([series.interarrivals_ms for series in series_list])
     x_min = float(np.min(stacked))
     x_max = float(np.max(stacked))
     x_pad = max(0.05, (x_max - x_min) * 0.08)
     x_range = (x_min - x_pad, x_max + x_pad)
     grid = np.linspace(x_range[0], x_range[1], 1200)
 
-    for name, values in series.items():
+    for series in series_list:
+        values = series.interarrivals_ms
         mean_ms = float(np.mean(values))
         std_ms = float(np.std(values, ddof=1))
-        label = f"{name} (mean={mean_ms:.2f}, std={std_ms:.2f})"
-        bin_width_ms = COMPARISON_BIN_WIDTH_MS.get(name)
+        label = f"{series.label} (mean={mean_ms:.2f}, std={std_ms:.2f})"
+        bin_width_ms = COMPARISON_BIN_WIDTH_MS.get(series.key)
         if bin_width_ms is None:
-            raise ValueError(f"Missing comparison bin width for series '{name}'.")
+            raise ValueError(f"Missing comparison bin width for series '{series.key}'.")
         edges = build_bin_edges(x_range[0], x_range[1], bin_width_ms)
 
         ax.hist(
@@ -237,14 +241,14 @@ def plot_densities(series: dict[str, np.ndarray], output_path: Path, title: str)
             density=True,
             alpha=0.55,
             label=label,
-            color=fills[name],
+            color=FILLS[series.key],
             edgecolor="white",
             linewidth=0.7,
         )
         ax.plot(
             grid,
             gaussian_kde(values, grid),
-            color=colors[name],
+            color=COLORS[series.key],
             linewidth=1.5,
         )
 
@@ -263,42 +267,27 @@ def plot_densities(series: dict[str, np.ndarray], output_path: Path, title: str)
 
 
 def plot_single_density(
-    name: str,
-    values: np.ndarray,
+    series: DensitySeries,
     output_path: Path,
     title: str,
 ) -> None:
     plt.style.use("default")
     fig, ax = plt.subplots(figsize=(10, 4.8))
 
-    colors = {
-        "LateFrame timerfd": "#12a8f0",
-        "LateFrame spin 50us": "#0c88c2",
-        "LateFrame spin 100us": "#7fd4ff",
-        "ping": "#86bf10",
-        "fping": "#ff5a1f",
-    }
-    fills = {
-        "LateFrame timerfd": "#7ccbf3",
-        "LateFrame spin 50us": "#5eb5e0",
-        "LateFrame spin 100us": "#b6e8ff",
-        "ping": "#b8dd67",
-        "fping": "#f7a287",
-    }
-
+    values = series.interarrivals_ms
     x_min = float(np.min(values))
     x_max = float(np.max(values))
     x_pad = max(0.05, (x_max - x_min) * 0.08)
     x_range = (x_min - x_pad, x_max + x_pad)
     grid = np.linspace(x_range[0], x_range[1], 1200)
-    bin_width_ms = INDIVIDUAL_BIN_WIDTH_MS.get(name)
+    bin_width_ms = INDIVIDUAL_BIN_WIDTH_MS.get(series.key)
     if bin_width_ms is None:
-        raise ValueError(f"Missing individual bin width for series '{name}'.")
+        raise ValueError(f"Missing individual bin width for series '{series.key}'.")
     edges = build_bin_edges(x_range[0], x_range[1], bin_width_ms)
 
     mean_ms = float(np.mean(values))
     std_ms = float(np.std(values, ddof=1))
-    label = f"{name} (mean={mean_ms:.2f}, std={std_ms:.2f})"
+    label = f"{series.label} (mean={mean_ms:.2f}, std={std_ms:.2f})"
 
     ax.hist(
         values,
@@ -306,14 +295,14 @@ def plot_single_density(
         density=True,
         alpha=0.55,
         label=label,
-        color=fills[name],
+        color=FILLS[series.key],
         edgecolor="white",
         linewidth=0.7,
     )
     ax.plot(
         grid,
         gaussian_kde(values, grid),
-        color=colors[name],
+        color=COLORS[series.key],
         linewidth=1.5,
     )
 
@@ -332,42 +321,33 @@ def plot_single_density(
 
 
 def plot_trimmed_zoom_density(
-    name: str,
-    values: np.ndarray,
+    series: DensitySeries,
     output_path: Path,
     title: str,
 ) -> None:
     plt.style.use("default")
     fig, ax = plt.subplots(figsize=(10, 4.8))
 
-    colors = {
-        "ping": "#86bf10",
-        "fping": "#ff5a1f",
-    }
-    fills = {
-        "ping": "#b8dd67",
-        "fping": "#f7a287",
-    }
-
+    values = series.interarrivals_ms
     low = float(np.quantile(values, 0.01))
     high = float(np.quantile(values, 0.99))
     trimmed = values[(values >= low) & (values <= high)]
     if len(trimmed) < 2:
-        raise ValueError(f"Not enough trimmed samples left for series '{name}'.")
+        raise ValueError(f"Not enough trimmed samples left for series '{series.key}'.")
 
     x_min = float(np.min(trimmed))
     x_max = float(np.max(trimmed))
     x_pad = max(0.01, (x_max - x_min) * 0.08)
     x_range = (x_min - x_pad, x_max + x_pad)
     grid = np.linspace(x_range[0], x_range[1], 1200)
-    bin_width_ms = ZOOMED_TRIMMED_BIN_WIDTH_MS.get(name)
+    bin_width_ms = ZOOMED_TRIMMED_BIN_WIDTH_MS.get(series.key)
     if bin_width_ms is None:
-        raise ValueError(f"Missing trimmed zoom bin width for series '{name}'.")
+        raise ValueError(f"Missing trimmed zoom bin width for series '{series.key}'.")
     edges = build_bin_edges(x_range[0], x_range[1], bin_width_ms)
 
     mean_ms = float(np.mean(trimmed))
     std_ms = float(np.std(trimmed, ddof=1))
-    label = f"{name} trimmed 1%-99% (mean={mean_ms:.2f}, std={std_ms:.2f})"
+    label = f"{series.label} trimmed 1%-99% (mean={mean_ms:.2f}, std={std_ms:.2f})"
 
     ax.hist(
         trimmed,
@@ -375,14 +355,14 @@ def plot_trimmed_zoom_density(
         density=True,
         alpha=0.55,
         label=label,
-        color=fills[name],
+        color=FILLS[series.key],
         edgecolor="white",
         linewidth=0.7,
     )
     ax.plot(
         grid,
         gaussian_kde(trimmed, grid),
-        color=colors[name],
+        color=COLORS[series.key],
         linewidth=1.5,
     )
 
@@ -434,59 +414,74 @@ def create_unified_grid(image_paths: list[tuple[str, Path]], output_path: Path) 
     plt.close(fig)
 
 
+def load_series(series_specs: list[str]) -> list[DensitySeries]:
+    series_list: list[DensitySeries] = []
+    for spec in series_specs:
+        key, label, pcap_path = parse_series_spec(spec)
+        if key not in COLORS:
+            raise ValueError(f"Missing color for series '{key}'.")
+
+        timestamps_s = load_timestamps_from_pcap(pcap_path)
+        series_list.append(
+            DensitySeries(
+                key=key,
+                label=label,
+                pcap_path=pcap_path,
+                interarrivals_ms=compute_interarrivals_ms(timestamps_s),
+            )
+        )
+
+    return series_list
+
+
 def main() -> int:
     args = parse_args()
 
-    pcap_paths = {
-        name: args.input_dir / filename
-        for name, filename in DEFAULT_PCAPS
-    }
-
-    for path in pcap_paths.values():
-        if not path.exists():
-            print(f"Error: missing input file: {path}", file=sys.stderr)
-            return 1
-
-    series: dict[str, np.ndarray] = {}
     try:
-        for name, path in pcap_paths.items():
-            timestamps_s = load_timestamps_from_pcap(path)
-            series[name] = compute_interarrivals_ms(timestamps_s)
-    except RuntimeError as exc:
+        series_list = load_series(args.series)
+    except (RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    for name, values in series.items():
-        print(format_stats(name, values))
+    series_by_key = {series.key: series for series in series_list}
 
-    plot_densities(series, args.output, args.title)
+    for series in series_list:
+        print(format_stats(series))
+
+    plot_densities(series_list, args.output, args.title)
     print(f"Saved plot to {args.output}")
 
     generated_images: list[tuple[str, Path]] = [
         ("Comparison", args.output),
     ]
 
-    for name, values in series.items():
-        individual_output = args.individual_output_dir / f"{slugify_series_name(name)}-interarrival-density.png"
+    for series in series_list:
+        individual_output = args.individual_output_dir / f"{series.key}-interarrival-density.png"
         plot_single_density(
-            name,
-            values,
+            series,
             individual_output,
-            f"{name} Inter-arrival Density",
+            f"{series.label} Inter-arrival Density",
         )
         print(f"Saved plot to {individual_output}")
-        generated_images.append((f"{name} Individual", individual_output))
+        generated_images.append((f"{series.label} Individual", individual_output))
 
-    for name in ("ping", "fping"):
-        zoomed_output = args.zoomed_output_dir / f"{name.lower()}-interarrival-density-trimmed.png"
-        plot_trimmed_zoom_density(
-            name,
-            series[name],
-            zoomed_output,
-            f"{name} Inter-arrival Density (1%-99% Trimmed)",
-        )
+    for key in args.zoomed:
+        series = series_by_key.get(key)
+        if series is None:
+            print(f"Error: --zoomed key '{key}' does not match any --series key.", file=sys.stderr)
+            return 1
+        try:
+            zoomed_output = args.zoomed_output_dir / f"{series.key}-interarrival-density-trimmed.png"
+            plot_trimmed_zoom_density(
+                series,
+                zoomed_output,
+                f"{series.label} Inter-arrival Density (1%-99% Trimmed)",
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
         print(f"Saved plot to {zoomed_output}")
-        generated_images.append((f"{name} Zoomed Trimmed", zoomed_output))
+        generated_images.append((f"{series.label} Zoomed Trimmed", zoomed_output))
 
     create_unified_grid(generated_images, args.unified_output)
     print(f"Saved plot to {args.unified_output}")
