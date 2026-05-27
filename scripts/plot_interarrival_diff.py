@@ -13,9 +13,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_ORIGINAL_PCAP = Path("comparison-data/generated/ping-test.pcap")
-DEFAULT_REPLAY_DIR = Path("comparison-data/replay")
-DEFAULT_OUTPUT_DIR = Path("docs/replay")
 DENSITY_BIN_WIDTH_MS = 0.005
 OUTPUT_DPI = 600
 AGGREGATE_FIGSIZE = (12, 13.5)
@@ -36,35 +33,47 @@ class ReplaySeries:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare one original PCAP against every replay PCAP in a directory by "
-            "plotting packet-by-packet inter-arrival differences."
+            "Generate replay inter-arrival difference plots from one original PCAP "
+            "and one or more replay PCAPs."
         )
     )
     parser.add_argument(
         "--original",
         type=Path,
-        default=DEFAULT_ORIGINAL_PCAP,
-        help=f"Original PCAP path (default: {DEFAULT_ORIGINAL_PCAP}).",
-    )
-    parser.add_argument(
-        "--replay-dir",
-        type=Path,
-        default=DEFAULT_REPLAY_DIR,
-        help=f"Directory containing replay PCAPs (default: {DEFAULT_REPLAY_DIR}).",
-    )
-    parser.add_argument(
-        "--replayed-dir",
-        dest="replay_dir",
-        type=Path,
-        help="Backward-compatible alias for --replay-dir.",
+        required=True,
+        help="Original PCAP path.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help=f"Directory to save the generated plots (default: {DEFAULT_OUTPUT_DIR}).",
+        required=True,
+        help="Directory to save the generated plots.",
+    )
+    parser.add_argument(
+        "--replay",
+        action="append",
+        required=True,
+        metavar="KEY=LABEL=PCAP",
+        help="Replay series to compare. May be repeated.",
+    )
+    parser.add_argument(
+        "--output-prefix",
+        required=True,
+        help="Prefix for output plot filenames.",
     )
     return parser.parse_args()
+
+
+def parse_replay_spec(spec: str) -> tuple[str, str, Path]:
+    parts = spec.split("=", 2)
+    if len(parts) != 3:
+        raise ValueError(f"invalid --replay value '{spec}', expected KEY=LABEL=PCAP")
+
+    key, label, pcap = (part.strip() for part in parts)
+    if not key or not label or not pcap:
+        raise ValueError(f"invalid --replay value '{spec}', expected KEY=LABEL=PCAP")
+
+    return key, label, Path(pcap)
 
 
 def load_timestamps_from_pcap(pcap_path: Path) -> list[float]:
@@ -140,26 +149,6 @@ def gaussian_kde(values: np.ndarray, grid: np.ndarray) -> np.ndarray:
     return density
 
 
-def replay_key_from_path(path: Path) -> str:
-    name = path.stem
-    prefix = "ping-test-replayed-result-"
-    if name.startswith(prefix):
-        return name[len(prefix):]
-    if name == "ping-test-replayed-result":
-        return "replayed"
-    return name
-
-
-def replay_label_from_key(key: str) -> str:
-    label_map = {
-        "timerfd": "timerfd",
-        "spin50": "nanosleep spin 50us",
-        "spin100": "nanosleep spin 100us",
-        "replayed": "replayed",
-    }
-    return label_map.get(key, key.replace("-", " "))
-
-
 def stats_dict(original: np.ndarray, replayed: np.ndarray, diff: np.ndarray) -> dict[str, float]:
     return {
         "original_count": len(original),
@@ -189,15 +178,13 @@ def print_stats(series: ReplaySeries) -> None:
             print(f"{key}={value:.9f}")
 
 
-def load_series(original_pcap: Path, replay_dir: Path) -> list[ReplaySeries]:
-    replayed_paths = sorted(replay_dir.glob("*.pcap"))
-    if not replayed_paths:
-        raise RuntimeError(f"no replay PCAP files found in {replay_dir}")
-
+def load_series(original_pcap: Path, replay_specs: list[tuple[str, str, Path]]) -> list[ReplaySeries]:
     original_interarrivals = compute_interarrivals_ms(load_timestamps_from_pcap(original_pcap))
     series_list: list[ReplaySeries] = []
 
-    for replayed_path in replayed_paths:
+    for key, label, replayed_path in replay_specs:
+        if replayed_path.resolve() == original_pcap.resolve():
+            continue
         replayed_interarrivals = compute_interarrivals_ms(load_timestamps_from_pcap(replayed_path))
         compared_count = min(len(original_interarrivals), len(replayed_interarrivals))
         if compared_count == 0:
@@ -206,18 +193,20 @@ def load_series(original_pcap: Path, replay_dir: Path) -> list[ReplaySeries]:
         original_aligned = original_interarrivals[:compared_count]
         replayed_aligned = replayed_interarrivals[:compared_count]
         diff_ms = original_aligned - replayed_aligned
-        key = replay_key_from_path(replayed_path)
 
         series_list.append(
             ReplaySeries(
                 key=key,
-                label=replay_label_from_key(key),
+                label=label,
                 replayed_path=replayed_path,
                 replayed_interarrivals_ms=replayed_aligned,
                 diff_ms=diff_ms,
                 original_aligned_ms=original_aligned,
             )
         )
+
+    if not series_list:
+        raise RuntimeError("no replay PCAP files left after excluding the original PCAP")
 
     return series_list
 
@@ -334,22 +323,23 @@ def main() -> int:
     args = parse_args()
 
     try:
-        series_list = load_series(args.original, args.replay_dir)
-    except RuntimeError as exc:
+        replay_specs = [parse_replay_spec(spec) for spec in args.replay]
+        series_list = load_series(args.original, replay_specs)
+    except (RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     for series in series_list:
         print_stats(series)
-        density_output = args.output_dir / "density" / f"ping-replay-interarrival-diff-density-{series.key}.png"
-        heartbeat_output = args.output_dir / "heartbeat" / f"ping-replay-interarrival-diff-heartbeat-{series.key}.png"
+        density_output = args.output_dir / "density" / f"{args.output_prefix}-interarrival-diff-density-{series.key}.png"
+        heartbeat_output = args.output_dir / "heartbeat" / f"{args.output_prefix}-interarrival-diff-heartbeat-{series.key}.png"
         plot_individual_density(series, density_output)
         plot_individual_heartbeat(series, heartbeat_output)
         print(f"Saved plot to {density_output}")
         print(f"Saved plot to {heartbeat_output}")
 
-    aggregate_heartbeat_output = args.output_dir / "ping-replay-interarrival-diff-heartbeat-aggregate.png"
-    aggregate_density_output = args.output_dir / "ping-replay-interarrival-diff-density-aggregate.png"
+    aggregate_heartbeat_output = args.output_dir / f"{args.output_prefix}-interarrival-diff-heartbeat-aggregate.png"
+    aggregate_density_output = args.output_dir / f"{args.output_prefix}-interarrival-diff-density-aggregate.png"
     plot_aggregate_heartbeat(series_list, aggregate_heartbeat_output)
     plot_aggregate_density(series_list, aggregate_density_output)
     print(f"Saved plot to {aggregate_heartbeat_output}")

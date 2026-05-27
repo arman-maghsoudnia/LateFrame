@@ -1,6 +1,6 @@
 # LateFrame
 
-Current version: `0.2.0`
+Current version: `0.3.0`
 
 LateFrame is a Linux UDP traffic generator for experiments where packet inter-arrival time matters.
 
@@ -107,6 +107,7 @@ Notes:
 - Generated traffic modes require `-n`, `-s`, and `-a`.
 - Gaussian mode also requires `-S`.
 - PCAP mode ignores `-n`, `-s`, `-a`, and `-S`.
+- CPU pinning can be disabled with `--no-cpu-pin`. The pinned vs. unpinned replay comparison results and reproduction commands are documented in `comparison-data/CPU_pinning/README.md`.
 
 Examples:
 
@@ -234,7 +235,18 @@ Host used for the run:
 To regenerate the figures from the PCAPs:
 
 ```bash
-python3 scripts/plot_interarrival_density.py
+python3 scripts/plot_interarrival_density.py \
+  --series "lateframe-timerfd=LateFrame timerfd=comparison-data/generated/lateframe-out-timerfd.pcap" \
+  --series "lateframe-spin-50us=LateFrame spin 50us=comparison-data/generated/lateframe-out-spin50.pcap" \
+  --series "lateframe-spin-100us=LateFrame spin 100us=comparison-data/generated/lateframe-out-spin100.pcap" \
+  --series "ping=ping=comparison-data/generated/ping-test.pcap" \
+  --series "fping=fping=comparison-data/generated/fping-test.pcap" \
+  --zoomed ping \
+  --zoomed fping \
+  --output docs/generated/interarrival-density-comparison.png \
+  --individual-output-dir docs/generated/individual-density-plots \
+  --zoomed-output-dir docs/generated/zoomed-density-plots \
+  --unified-output docs/generated/interarrival-density-results-grid.png
 ```
 
 This produces:
@@ -252,7 +264,13 @@ This produces:
 To regenerate the replay comparison figures from all replay captures in `comparison-data/replay/`:
 
 ```bash
-python3 scripts/plot_interarrival_diff.py
+python3 scripts/plot_interarrival_diff.py \
+  --original comparison-data/generated/ping-test.pcap \
+  --replay "timerfd=timerfd=comparison-data/replay/ping-test-replayed-result-timerfd.pcap" \
+  --replay "spin50=nanosleep spin 50us=comparison-data/replay/ping-test-replayed-result-spin50.pcap" \
+  --replay "spin100=nanosleep spin 100us=comparison-data/replay/ping-test-replayed-result-spin100.pcap" \
+  --output-dir docs/replay \
+  --output-prefix ping-replay
 ```
 
 This produces one heartbeat plot and one density plot per replay PCAP, plus:
@@ -260,13 +278,6 @@ This produces one heartbeat plot and one density plot per replay PCAP, plus:
 - `docs/replay/ping-replay-interarrival-diff-heartbeat-aggregate.png`
 - `docs/replay/ping-replay-interarrival-diff-density-aggregate.png`
 
-To compare the baseline capture against the CPU-pinned and non-pinned replay runs in `comparison-data/CPU_pinning/`:
-
-```bash
-python3 scripts/compare_CPU_pinning.py
-```
-
-This produces a combined density figure, per-series density figures, and replay-difference plots under `docs/generated/cpu-pinning/`.
 
 ## PCAP Replay
 
@@ -355,7 +366,13 @@ sudo lateframe -i enp113s0 -d 128.178.122.100 -p 12345 -t pcap -f comparison-dat
 Then copy the replay PCAPs into `comparison-data/replay/` and run:
 
 ```bash
-python3 scripts/plot_interarrival_diff.py
+python3 scripts/plot_interarrival_diff.py \
+  --original comparison-data/generated/ping-test.pcap \
+  --replay "timerfd=timerfd=comparison-data/replay/ping-test-replayed-result-timerfd.pcap" \
+  --replay "spin50=nanosleep spin 50us=comparison-data/replay/ping-test-replayed-result-spin50.pcap" \
+  --replay "spin100=nanosleep spin 100us=comparison-data/replay/ping-test-replayed-result-spin100.pcap" \
+  --output-dir docs/replay \
+  --output-prefix ping-replay
 ```
 
 ## How It Works
