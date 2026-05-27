@@ -95,6 +95,7 @@ Main options:
 - `--wait-mode`: `timerfd` or `nanosleep` for the packet pacing wait primitive
 - `--spin-us`: busy-spin window in microseconds for `nanosleep` wait mode
 - `-l`, `--log`: log sends to stdout and `/tmp/lateframe.log`
+- `-D`, `--dscp`: Assign same DSCP value to all generated or replayed packets (0 to 63)
 - `-c`, `--capture`: capture generated packets to `/tmp/lateframe-capture.pcap`
 
 Notes:

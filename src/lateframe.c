@@ -137,7 +137,7 @@ static void print_help(void) {
     printf("      --spin-us USEC         Busy-spin for the last USEC before each deadline in nanosleep mode\n");
     printf("      --sping-us USEC        Backward-compatible alias for --spin-us\n");
     printf("  -l, --log                  Log packet sends to stdout and %s\n", LOG_PATH);
-    printf("  -D, --dscp VALUE           DSCP value (0..63, e.g. 46 for EF)\n");
+    printf("  -D, --dscp VALUE           Assign same DSCP value to all generated or replayed packets (0 to 63)\n");
     printf("  -c, --capture              Capture outgoing packets with tshark to %s\n", CAPTURE_PATH);
     printf("  -V, --version              Display version information\n");
     printf("  -h, --help                 Display this help message\n");
